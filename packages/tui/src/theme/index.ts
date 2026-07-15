@@ -207,6 +207,14 @@ export function setCustomThemes(themes: Record<string, ThemeJson>) {
   syncThemes()
 }
 
+export function setCustomTheme(name: string, theme: unknown) {
+  if (!name) return false
+  if (!isTheme(theme)) return false
+  customThemes[name] = theme
+  syncThemes()
+  return true
+}
+
 export function setSystemTheme(theme: ThemeJson | undefined) {
   systemTheme = theme
   syncThemes()

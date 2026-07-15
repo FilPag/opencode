@@ -274,11 +274,7 @@ export const TuiThreadCommand = cmd({
           client.call("checkUpgrade", { directory: cwd }).catch(() => {})
         }, 1000).unref?.()
 
-        const [effect, tui, plugin] = await Promise.all([
-          import("effect"),
-          import("../tui/layer"),
-          import("@/plugin/tui/runtime"),
-        ])
+        const [effect, tui] = await Promise.all([import("effect"), import("../tui/layer")])
         BootProfile.mark("tui.runtime.started")
         await effect.Effect.runPromise(
           tui.run({
@@ -289,7 +285,7 @@ export const TuiThreadCommand = cmd({
               return [tui, server]
             },
             config,
-            pluginHost: plugin.createLegacyTuiPluginHost(),
+            pluginHost: tui.createTuiPluginHost(),
             directory: cwd,
             fetch: transport.fetch,
             headers: transport.headers,

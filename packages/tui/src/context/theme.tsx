@@ -1,4 +1,4 @@
-import { CliRenderEvents, SyntaxStyle, type TerminalColors } from "@opentui/core"
+import { CliRenderEvents, RGBA, SyntaxStyle, type TerminalColors } from "@opentui/core"
 import { useRenderer } from "@opentui/solid"
 import {
   DEFAULT_THEMES,
@@ -11,6 +11,7 @@ import {
   isTheme,
   resolveTheme,
   selectedForeground,
+  setCustomTheme,
   setCustomThemes,
   setSystemTheme,
   subscribeThemes,
@@ -25,28 +26,37 @@ import { createSimpleContext } from "./helper"
 import { useKV } from "./kv"
 import { useTuiConfig } from "../config"
 import { Global } from "@opencode-ai/core/global"
+import { BootProfile } from "@opencode-ai/core/boot-profile"
 import { Glob } from "@opencode-ai/core/util/glob"
 import { readFile } from "node:fs/promises"
 import path from "node:path"
 
 export type ThemeSource = Readonly<{
   discover(): Promise<Record<string, unknown>>
+  discoverSelected?(name: string): Promise<unknown | undefined>
   subscribeRefresh?(refresh: () => void): () => void
 }>
 
 const themeSource: ThemeSource = {
   async discover() {
-    const directories = [Global.Path.config]
-    for (let current = process.cwd(); ; current = path.dirname(current)) {
-      directories.push(path.join(current, ".opencode"))
-      if (path.dirname(current) === current) break
-    }
-    return discoverThemes(directories)
+    return discoverThemes(themeDirectories())
+  },
+  async discoverSelected(name) {
+    return discoverSelectedTheme(themeDirectories(), name)
   },
   subscribeRefresh(refresh) {
     process.on("SIGUSR2", refresh)
     return () => process.off("SIGUSR2", refresh)
   },
+}
+
+function themeDirectories() {
+  const directories = [Global.Path.config]
+  for (let current = process.cwd(); ; current = path.dirname(current)) {
+    directories.push(path.join(current, ".opencode"))
+    if (path.dirname(current) === current) break
+  }
+  return directories
 }
 
 export async function discoverThemes(directories: string[]) {
@@ -58,6 +68,18 @@ export async function discoverThemes(directories: string[]) {
     }
   }
   return result
+}
+
+export async function discoverSelectedTheme(directories: string[], name: string) {
+  if (path.basename(name) !== name) return
+  const themes = await Promise.all(
+    directories.map(async (directory) => {
+      const file = Bun.file(path.join(directory, "themes", `${name}.json`))
+      if (!(await file.exists())) return
+      return file.json().catch(() => undefined)
+    }),
+  )
+  return themes.findLast((theme) => theme !== undefined)
 }
 
 export {
@@ -101,7 +123,6 @@ subscribeThemes((themes) => setStore("themes", themes))
 
 export const { use: useTheme, provider: ThemeProvider } = createSimpleContext({
   name: "Theme",
-  gate: false,
   init: (props: { mode: "dark" | "light"; source?: ThemeSource }) => {
     const renderer = useRenderer()
     const config = useTuiConfig()
@@ -124,6 +145,19 @@ export const { use: useTheme, provider: ThemeProvider } = createSimpleContext({
         draft.ready = false
       }),
     )
+    BootProfile.mark("tui.theme.initialized", { active: store.active, mode: store.mode })
+
+    const selectedTheme = (() => {
+      if (store.active === "system" || store.themes[store.active]) return Promise.resolve()
+      BootProfile.mark("tui.theme.selected_started", { active: store.active })
+      return themes
+        .discoverSelected?.(store.active)
+        .then((theme) => {
+          if (!theme || !setCustomTheme(store.active, theme)) return
+          BootProfile.mark("tui.theme.selected_resolved", { active: store.active })
+        })
+        .catch(() => {})
+    })()
 
     createEffect(() => {
       const theme = config.theme
@@ -145,9 +179,11 @@ export const { use: useTheme, provider: ThemeProvider } = createSimpleContext({
     }
 
     onMount(() => {
-      void Promise.allSettled([resolveSystemTheme(store.mode), syncCustomThemes()]).finally(() => {
-        setStore("ready", true)
-      })
+      const palette = resolveSystemTheme(store.mode)
+      const initial = store.active === "system" ? palette : selectedTheme
+      void Promise.resolve(initial).finally(() => setStore("ready", true))
+      if (store.active !== "system") void palette
+      void syncCustomThemes()
     })
 
     let systemThemeSignature: string | undefined
@@ -171,6 +207,7 @@ export const { use: useTheme, provider: ThemeProvider } = createSimpleContext({
           systemThemeSignature = signature
           systemThemeMode = next
           setSystemTheme(generateSystem(colors, next))
+          BootProfile.mark("tui.theme.system_resolved", { mode: next })
         })
         .catch(() => {
           if (hasResolvedSystemTheme) return
@@ -264,7 +301,12 @@ export const { use: useTheme, provider: ThemeProvider } = createSimpleContext({
         if (theme) return resolveTheme(theme, store.mode)
       }
 
-      return resolveTheme(store.themes.opencode, store.mode)
+      const fallback = resolveTheme(store.themes.opencode, store.mode)
+      if (store.active === "opencode") return fallback
+      return {
+        ...fallback,
+        background: RGBA.fromValues(fallback.background.r, fallback.background.g, fallback.background.b, 0),
+      }
     })
 
     createEffect(() => renderer.setBackgroundColor(values().background))

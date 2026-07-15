@@ -3,6 +3,7 @@ import { RGBA } from "@opentui/core"
 import { createTuiResolvedConfig } from "./tui-runtime"
 
 type Opts = {
+  renderer?: TuiPluginApi["renderer"]
   client?: TuiPluginApi["client"]
   keymap?: TuiPluginApi["keymap"]
   attention?: Partial<TuiPluginApi["attention"]>
@@ -15,6 +16,7 @@ export function createTuiPluginApi(opts: Opts = {}) {
   const color = RGBA.fromInts(200, 200, 200)
   const dialog = { clear() {}, replace() {}, setSize() {}, size: "medium" as const, depth: 0, open: false }
   return {
+    renderer: opts.renderer,
     attention: { notify: async () => ({ ok: false, notification: false, sound: false }), ...opts.attention },
     client: opts.client,
     event: opts.event,

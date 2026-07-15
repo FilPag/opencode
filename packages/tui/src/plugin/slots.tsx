@@ -23,13 +23,15 @@ function isHostSlotPlugin(value: unknown): value is HostSlotPlugin<Record<string
 }
 
 export function createSlots() {
-  const empty: SlotView = () => null
+  const empty: SlotView = (props) => props.children
   const [view, setView] = createSignal<SlotView>(empty)
-  const Slot: SlotView = (props) => view()(props)
+  const Slot: SlotView = (props) => <>{view()(props)}</>
+  let active: HostSlots | undefined
 
   return {
     Slot,
     setup(api: HostPluginApi): HostSlots {
+      if (active) return active
       const registry = createSolidSlotRegistry<RuntimeSlotMap, TuiSlotContext>(
         api.renderer,
         { theme: api.theme },
@@ -48,18 +50,22 @@ export function createSlots() {
       const slot = createSlot<RuntimeSlotMap, TuiSlotContext>(registry)
       setView(() => (props: TuiSlotProps<string>) => slot(props))
 
-      return {
+      const host: HostSlots = {
         register(plugin: HostSlotPlugin) {
           if (!isHostSlotPlugin(plugin)) return () => {}
           return registry.register(plugin)
         },
         dispose() {
+          if (active !== host) return
+          active = undefined
           setView(() => empty)
         },
       }
+      active = host
+      return host
     },
     clear() {
-      setView(() => empty)
+      active?.dispose()
     },
   }
 }

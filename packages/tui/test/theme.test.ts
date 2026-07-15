@@ -2,8 +2,17 @@ import { expect, test } from "bun:test"
 import { mkdir, writeFile } from "node:fs/promises"
 import path from "node:path"
 import type { TerminalColors } from "@opentui/core"
-import { DEFAULT_THEMES, addTheme, allThemes, hasTheme, resolveTheme, terminalMode } from "../src/theme"
-import { discoverThemes } from "../src/context/theme"
+import {
+  DEFAULT_THEMES,
+  addTheme,
+  allThemes,
+  hasTheme,
+  resolveTheme,
+  setCustomTheme,
+  setCustomThemes,
+  terminalMode,
+} from "../src/theme"
+import { discoverSelectedTheme, discoverThemes } from "../src/context/theme"
 import { tmpdir } from "./fixture/fixture"
 
 test("addTheme writes into module theme store", () => {
@@ -35,6 +44,19 @@ test("hasTheme checks theme presence", () => {
   expect(hasTheme(name)).toBe(false)
   expect(addTheme(name, DEFAULT_THEMES.opencode)).toBe(true)
   expect(hasTheme(name)).toBe(true)
+})
+
+test("selected custom theme fast path is replaced by full discovery", () => {
+  const name = `selected-theme-${Date.now()}`
+  const plugin = structuredClone(DEFAULT_THEMES.opencode)
+  const custom = structuredClone(DEFAULT_THEMES.opencode)
+  plugin.theme.primary = "#101010"
+  custom.theme.primary = "#fefefe"
+  expect(addTheme(name, plugin)).toBe(true)
+  expect(setCustomTheme(name, custom)).toBe(true)
+  expect(allThemes()[name]?.theme.primary).toBe("#fefefe")
+  setCustomThemes({})
+  expect(allThemes()[name]?.theme.primary).toBe("#101010")
 })
 
 test("resolveTheme rejects circular color refs", () => {
@@ -78,4 +100,6 @@ test("custom theme precedence follows directory order", async () => {
   await writeFile(path.join(project, "themes", "custom.json"), JSON.stringify({ source: "project" }))
 
   await expect(discoverThemes([global, project])).resolves.toEqual({ custom: { source: "project" } })
+  await expect(discoverSelectedTheme([global, project], "custom")).resolves.toEqual({ source: "project" })
+  await expect(discoverSelectedTheme([global, project], "../custom")).resolves.toBeUndefined()
 })

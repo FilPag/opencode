@@ -58,6 +58,7 @@ export const {
   provider: SyncProvider,
 } = createSimpleContext({
   name: "Sync",
+  gate: false,
   init: () => {
     const startup = useTuiStartup()
     const kv = useKV()
@@ -141,6 +142,9 @@ export const {
     const event = useEvent()
     const project = useProject()
     const sdk = useSDK()
+    const promptPrerequisites = Promise.withResolvers<void>()
+    const commands = Promise.withResolvers<void>()
+    let commandsReady = false
 
     const fullSyncedSessions = new Set<string>()
     const syncingSessions = new Map<string, Promise<void>>()
@@ -462,6 +466,26 @@ export const {
         .catch(() => emptyConsoleState)
       const agentsPromise = sdk.client.app.agents({ workspace }, { throwOnError: true })
       const configPromise = sdk.client.config.get({ workspace }, { throwOnError: true })
+      const commandPromise = sdk.client.command
+        .list({ workspace })
+        .then((x) => setStore("command", reconcile(x.data ?? [])))
+        .catch(() => {})
+        .finally(() => {
+          commandsReady = true
+          commands.resolve()
+        })
+      void Promise.all([providersPromise, agentsPromise, configPromise])
+        .then(([providers, agents, config]) => {
+          batch(() => {
+            setStore("provider", reconcile(providers.data!.providers))
+            setStore("provider_default", reconcile(providers.data!.default))
+            setStore("agent", reconcile(agents.data ?? []))
+            setStore("config", reconcile(config.data!))
+          })
+          BootProfile.mark("tui.sync.prompt_ready")
+        })
+        .catch(() => {})
+        .finally(promptPrerequisites.resolve)
       await Promise.all([
         providersPromise,
         providerListPromise,
@@ -517,7 +541,7 @@ export const {
           void Promise.all([
             ...(args.continue ? [] : [sessionListPromise.then((sessions) => setStore("session", reconcile(sessions)))]),
             consoleStatePromise.then((consoleState) => setStore("console_state", reconcile(consoleState))),
-            sdk.client.command.list({ workspace }).then((x) => setStore("command", reconcile(x.data ?? []))),
+            commandPromise,
             sdk.client.lsp.status({ workspace }).then((x) => setStore("lsp", reconcile(x.data ?? []))),
             sdk.client.mcp.status({ workspace }).then((x) => setStore("mcp", reconcile(x.data ?? {}))),
             sdk.client.experimental.resource
@@ -562,6 +586,15 @@ export const {
       get ready() {
         if (startup.skipInitialLoading) return true
         return store.status !== "loading"
+      },
+      waitForPromptPrerequisites() {
+        return promptPrerequisites.promise
+      },
+      get commandsReady() {
+        return commandsReady
+      },
+      waitForCommands() {
+        return commands.promise
       },
       get path() {
         return project.instance.path()

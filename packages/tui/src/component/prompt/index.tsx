@@ -212,6 +212,8 @@ export function Prompt(props: PromptProps) {
   const [cursorVersion, setCursorVersion] = createSignal(0)
   const currentProviderLabel = createMemo(() => local.model.parsed().provider)
   const hasRightContent = createMemo(() => Boolean(props.right))
+  const [preparing, setPreparing] = createSignal(false)
+  const disabled = () => props.disabled || preparing()
 
   function promptModelWarning() {
     toast.show({
@@ -249,8 +251,8 @@ export function Prompt(props: PromptProps) {
 
   createEffect(() => {
     if (!input || input.isDestroyed) return
-    if (props.disabled) input.cursorColor = theme.backgroundElement
-    if (!props.disabled) input.cursorColor = theme.text
+    if (disabled()) input.cursorColor = theme.backgroundElement
+    if (!disabled()) input.cursorColor = theme.text
   })
 
   const lastUserMessage = createMemo(() => {
@@ -799,7 +801,7 @@ export function Prompt(props: PromptProps) {
   useBindings(() => {
     return {
       target: inputTarget,
-      enabled: inputTarget() !== undefined && !props.disabled,
+      enabled: inputTarget() !== undefined && !disabled(),
       bindings: tuiConfig.keybinds.get("prompt.paste"),
     }
   })
@@ -807,7 +809,7 @@ export function Prompt(props: PromptProps) {
   useBindings(() => {
     return {
       target: inputTarget,
-      enabled: inputTarget() !== undefined && !props.disabled && store.prompt.input !== "",
+      enabled: inputTarget() !== undefined && !disabled() && store.prompt.input !== "",
       bindings: tuiConfig.keybinds.get("prompt.clear"),
     }
   })
@@ -819,7 +821,7 @@ export function Prompt(props: PromptProps) {
         cursorVersion()
         return (
           inputTarget() !== undefined &&
-          !props.disabled &&
+          !disabled() &&
           store.mode === "normal" &&
           !auto()?.visible &&
           input?.visualCursor.offset === 0
@@ -863,7 +865,7 @@ export function Prompt(props: PromptProps) {
       target: inputTarget,
       enabled: (() => {
         cursorVersion()
-        return inputTarget() !== undefined && !props.disabled && !auto()?.visible && input !== undefined
+        return inputTarget() !== undefined && !disabled() && !auto()?.visible && input !== undefined
       })(),
       commands: [
         {
@@ -895,7 +897,7 @@ export function Prompt(props: PromptProps) {
       target: inputTarget,
       enabled: (() => {
         cursorVersion()
-        return inputTarget() !== undefined && !props.disabled && !auto()?.visible && input !== undefined
+        return inputTarget() !== undefined && !disabled() && !auto()?.visible && input !== undefined
       })(),
       commands: [
         {
@@ -953,10 +955,23 @@ export function Prompt(props: PromptProps) {
       setStore("prompt", "input", input.plainText)
       syncExtmarksWithPromptParts()
     }
-    if (props.disabled) return false
+    if (disabled()) return false
     if (workspace.creating() || move.creating()) return false
     if (auto()?.visible) return false
     if (!store.prompt.input) return false
+    const waitForModel = !local.agent.current() || !local.model.current()
+    const waitForCommand = store.prompt.input.startsWith("/") && !sync.commandsReady
+    if (waitForModel || waitForCommand) {
+      setPreparing(true)
+      toast.show({ message: "Preparing your session…", variant: "info" })
+      try {
+        if (waitForModel) await sync.waitForPromptPrerequisites()
+        if (waitForCommand) await sync.waitForCommands()
+      } finally {
+        setPreparing(false)
+      }
+      if (!input || input.isDestroyed) return false
+    }
     const agent = local.agent.current()
     if (!agent) return false
     const trimmed = store.prompt.input.trim()
@@ -1382,7 +1397,7 @@ export function Prompt(props: PromptProps) {
               }}
               onCursorChange={() => setCursorVersion((value) => value + 1)}
               onKeyDown={(e: { preventDefault(): void }) => {
-                if (props.disabled) {
+                if (disabled()) {
                   e.preventDefault()
                   return
                 }
@@ -1393,7 +1408,7 @@ export function Prompt(props: PromptProps) {
                 setTimeout(() => setTimeout(() => submit(), 0), 0)
               }}
               onPaste={async (event: PasteEvent) => {
-                if (props.disabled) {
+                if (disabled()) {
                   event.preventDefault()
                   return
                 }
@@ -1435,7 +1450,7 @@ export function Prompt(props: PromptProps) {
               }}
               onMouseDown={(r: MouseEvent) => r.target?.focus()}
               focusedBackgroundColor={theme.backgroundElement}
-              cursorColor={props.disabled ? theme.backgroundElement : theme.text}
+              cursorColor={disabled() ? theme.backgroundElement : theme.text}
               syntaxStyle={syntax()}
             />
             <box flexDirection="row" flexShrink={0} paddingTop={1} gap={1} justifyContent="space-between">

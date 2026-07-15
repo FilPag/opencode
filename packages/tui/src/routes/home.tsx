@@ -83,12 +83,16 @@ export function Home() {
             <Prompt ref={bind} right={<pluginRuntime.Slot name="home_prompt_right" />} placeholders={placeholder} />
           </pluginRuntime.Slot>
         </box>
-        <pluginRuntime.Slot name="home_bottom" />
+        <box height={5} flexShrink={0}>
+          <pluginRuntime.Slot name="home_bottom" />
+        </box>
         <box flexGrow={1} minHeight={0} />
         <Toast />
       </box>
       <box width="100%" flexShrink={0}>
-        <pluginRuntime.Slot name="home_footer" mode="single_winner" />
+        <box height={3} flexShrink={0}>
+          <pluginRuntime.Slot name="home_footer" mode="single_winner" />
+        </box>
       </box>
     </HomeSessionDestinationProvider>
   )

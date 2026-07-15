@@ -12,7 +12,8 @@ describe("tui thread", () => {
     const source = await Bun.file(new URL("../../../src/cli/cmd/tui.ts", import.meta.url)).text()
 
     expect(source).toContain('import("../tui/layer")')
-    expect(source).toMatch(/import\(["']@\/plugin\/tui\/runtime["']\)/)
+    expect(source).toContain("tui.createTuiPluginHost()")
+    expect(source).not.toContain('@/plugin/tui/runtime')
     expect(source).not.toContain('import("./app")')
   })
 
