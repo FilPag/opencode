@@ -1,4 +1,5 @@
 import { render, TimeToFirstDraw, useRenderer, useTerminalDimensions } from "@opentui/solid"
+import { BootProfile } from "@opencode-ai/core/boot-profile"
 import { registerOpencodeSpinner } from "./component/register-spinner"
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
 import { Deferred, Effect } from "effect"
@@ -211,6 +212,7 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
             destroyRenderer(renderer)
           }),
       )
+      yield* Effect.sync(() => BootProfile.mark("tui.renderer.created"))
       win32DisableProcessedInput()
       const keymap = createDefaultOpenTuiKeymap(renderer)
       yield* Effect.acquireRelease(
@@ -240,6 +242,7 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
         // Prewarm palette before ThemeProvider mounts so `system` theme avoids a first-paint fallback flash.
         void renderer.getPalette({ size: 16 }).catch(() => undefined)
         const mode = (await renderer.waitForThemeMode(1000)) ?? "dark"
+        BootProfile.mark("tui.theme_mode.resolved", { mode })
         if (renderer.isDestroyed) return
 
         await render(() => {
@@ -349,6 +352,7 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
             </ExitProvider>
           )
         }, renderer)
+        BootProfile.mark("tui.solid.mounted")
       })
       yield* Deferred.await(shutdown)
       return { epilogue: exit.epilogue, reason: exit.reason }
@@ -416,6 +420,7 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
       console.error("Failed to load TUI plugins", error)
     })
     .finally(() => {
+      BootProfile.mark("tui.plugins.settled")
       setReady(true)
     })
 

@@ -14,6 +14,7 @@ import { writeHeapSnapshot } from "v8"
 import { ServerAuth } from "@/server/auth"
 import { validateSession } from "../tui/validate-session"
 import { win32InstallCtrlCGuard } from "@opencode-ai/tui/terminal-win32"
+import { BootProfile } from "@opencode-ai/core/boot-profile"
 
 declare global {
   const OPENCODE_WORKER_PATH: string
@@ -142,6 +143,7 @@ export const TuiThreadCommand = cmd({
         hidden: true,
       }),
   handler: async (args) => {
+    BootProfile.mark("tui.command.started")
     if (args.replay === true) {
       UI.error("--replay is not supported; replay is enabled by default")
       process.exitCode = 1
@@ -212,6 +214,7 @@ export const TuiThreadCommand = cmd({
           Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
         ),
       })
+      BootProfile.mark("tui.worker.created")
       const client = Rpc.client<typeof rpc>(worker)
       const reload = () => {
         client.call("reload", undefined).catch(() => {})
@@ -229,6 +232,7 @@ export const TuiThreadCommand = cmd({
 
       const prompt = await input(args.prompt)
       const config = await TuiConfig.get()
+      BootProfile.mark("tui.config.loaded")
 
       const network = resolveNetworkOptionsNoConfig(args)
       const external = hasArg("--port") || hasArg("--hostname") || network.mdns === true
@@ -247,6 +251,7 @@ export const TuiThreadCommand = cmd({
             fetch: createWorkerFetch(client),
             events: createEventSource(client),
           }
+      BootProfile.mark("tui.transport.ready", { external })
 
       try {
         await validateSession({
@@ -270,6 +275,7 @@ export const TuiThreadCommand = cmd({
         const { Effect } = await import("effect")
         const { run } = await import("../tui/layer")
         const { createLegacyTuiPluginHost } = await import("@/plugin/tui/runtime")
+        BootProfile.mark("tui.runtime.started")
         await Effect.runPromise(
           run({
             url: transport.url,

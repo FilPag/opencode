@@ -25,6 +25,7 @@ import { useProject } from "./project"
 import { useEvent } from "./event"
 import { useSDK } from "./sdk"
 import { useTuiStartup } from "./runtime"
+import { BootProfile } from "@opencode-ai/core/boot-profile"
 import { createSimpleContext } from "./helper"
 import { useExit } from "./exit"
 import { useArgs } from "./args"
@@ -509,7 +510,9 @@ export const {
           })
         })
         .then(() => {
+          const initial = store.status === "loading"
           if (store.status !== "complete") setStore("status", "partial")
+          if (initial) BootProfile.mark("tui.sync.partial")
           // non-blocking
           void Promise.all([
             ...(args.continue ? [] : [sessionListPromise.then((sessions) => setStore("session", reconcile(sessions)))]),
@@ -529,6 +532,7 @@ export const {
             project.workspace.sync(),
           ]).then(() => {
             setStore("status", "complete")
+            if (initial) BootProfile.mark("tui.sync.complete")
           })
         })
         .catch(async (e) => {

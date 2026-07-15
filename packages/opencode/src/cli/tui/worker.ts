@@ -10,7 +10,9 @@ import { Heap } from "@/cli/heap"
 import { AppRuntime } from "@/effect/app-runtime"
 import { Effect } from "effect"
 import { disposeAllInstancesAndEmitGlobalDisposed } from "@/server/global-lifecycle"
+import { BootProfile } from "@opencode-ai/core/boot-profile"
 
+BootProfile.mark("tui.worker.entry")
 Heap.start()
 
 const onUnhandledRejection = (_error: unknown) => {}
@@ -26,9 +28,15 @@ GlobalBus.on("event", (event) => {
 })
 
 let server: Awaited<ReturnType<typeof Server.listen>> | undefined
+let internalRequest = false
 
 export const rpc = {
   async fetch(input: { url: string; method: string; headers: Record<string, string>; body?: string }) {
+    const firstRequest = !internalRequest
+    if (firstRequest) {
+      internalRequest = true
+      BootProfile.mark("server.internal.first_request")
+    }
     const headers = { ...input.headers }
     const auth = ServerAuth.header()
     if (auth && !headers["authorization"] && !headers["Authorization"]) {
@@ -40,6 +48,7 @@ export const rpc = {
       body: input.body,
     })
     const response = await Server.Default().app.fetch(request)
+    if (firstRequest) BootProfile.mark("server.internal.first_response")
     const body = await response.text()
     return {
       status: response.status,
@@ -54,6 +63,7 @@ export const rpc = {
   async server(input: { port: number; hostname: string; mdns?: boolean; cors?: string[] }) {
     if (server) await server.stop(true)
     server = await Server.listen(input)
+    BootProfile.mark("server.listener.ready")
     return { url: server.url.toString() }
   },
   async checkUpgrade(input: { directory: string }) {

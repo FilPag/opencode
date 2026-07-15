@@ -6,6 +6,7 @@ import { Global } from "@opencode-ai/core/global"
 import { readJson, writeJsonAtomic } from "../util/persistence"
 import { useTuiPaths } from "./runtime"
 import path from "path"
+import { BootProfile } from "@opencode-ai/core/boot-profile"
 
 export const { use: useKV, provider: KVProvider } = createSimpleContext({
   name: "KV",
@@ -27,6 +28,7 @@ export const { use: useKV, provider: KVProvider } = createSimpleContext({
         console.error("Failed to read KV state", { error })
       })
       .finally(() => {
+        BootProfile.mark("tui.kv.ready")
         setReady(true)
       })
 
