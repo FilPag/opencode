@@ -190,7 +190,6 @@ export const TuiThreadCommand = cmd({
 
     const unguard = win32InstallCtrlCGuard()
     try {
-      const { TuiConfig } = await import("@/config/tui")
       if (args.fork && !args.continue && !args.session) {
         UI.error("--fork requires --continue or --session")
         process.exitCode = 1
@@ -215,6 +214,8 @@ export const TuiThreadCommand = cmd({
         ),
       })
       BootProfile.mark("tui.worker.created")
+      const tuiConfig = import("@/config/tui")
+      void tuiConfig.catch(() => {})
       const client = Rpc.client<typeof rpc>(worker)
       const reload = () => {
         client.call("reload", undefined).catch(() => {})
@@ -230,54 +231,57 @@ export const TuiThreadCommand = cmd({
         worker.terminate()
       }
 
-      const prompt = await input(args.prompt)
-      const config = await TuiConfig.get()
-      BootProfile.mark("tui.config.loaded")
+      try {
+        const prompt = await input(args.prompt)
+        const { TuiConfig } = await tuiConfig
+        const config = await TuiConfig.get()
+        BootProfile.mark("tui.config.loaded")
 
-      const network = resolveNetworkOptionsNoConfig(args)
-      const external = hasArg("--port") || hasArg("--hostname") || network.mdns === true
+        const network = resolveNetworkOptionsNoConfig(args)
+        const external = hasArg("--port") || hasArg("--hostname") || network.mdns === true
 
-      const headers = external ? ServerAuth.headers() : undefined
+        const headers = external ? ServerAuth.headers() : undefined
 
-      const transport = external
-        ? {
-            url: (await client.call("server", network)).url,
-            fetch: undefined,
-            events: undefined,
+        const transport = external
+          ? {
+              url: (await client.call("server", network)).url,
+              fetch: undefined,
+              events: undefined,
+              headers,
+            }
+          : {
+              url: "http://opencode.internal",
+              fetch: createWorkerFetch(client),
+              events: createEventSource(client),
+            }
+        BootProfile.mark("tui.transport.ready", { external })
+
+        try {
+          await validateSession({
+            url: transport.url,
+            sessionID: args.session,
+            directory: cwd,
+            fetch: transport.fetch,
             headers,
-          }
-        : {
-            url: "http://opencode.internal",
-            fetch: createWorkerFetch(client),
-            events: createEventSource(client),
-          }
-      BootProfile.mark("tui.transport.ready", { external })
+          })
+        } catch (error) {
+          UI.error(errorMessage(error))
+          process.exitCode = 1
+          return
+        }
 
-      try {
-        await validateSession({
-          url: transport.url,
-          sessionID: args.session,
-          directory: cwd,
-          fetch: transport.fetch,
-          headers,
-        })
-      } catch (error) {
-        UI.error(errorMessage(error))
-        process.exitCode = 1
-        return
-      }
+        setTimeout(() => {
+          client.call("checkUpgrade", { directory: cwd }).catch(() => {})
+        }, 1000).unref?.()
 
-      setTimeout(() => {
-        client.call("checkUpgrade", { directory: cwd }).catch(() => {})
-      }, 1000).unref?.()
-
-      try {
-        const { Effect } = await import("effect")
-        const { run } = await import("../tui/layer")
-        const { createLegacyTuiPluginHost } = await import("@/plugin/tui/runtime")
+        const [effect, tui, plugin] = await Promise.all([
+          import("effect"),
+          import("../tui/layer"),
+          import("@/plugin/tui/runtime"),
+        ])
         BootProfile.mark("tui.runtime.started")
-        await Effect.runPromise(
-          run({
+        await effect.Effect.runPromise(
+          tui.run({
             url: transport.url,
             async onSnapshot() {
               const tui = writeHeapSnapshot("tui.heapsnapshot")
@@ -285,7 +289,7 @@ export const TuiThreadCommand = cmd({
               return [tui, server]
             },
             config,
-            pluginHost: createLegacyTuiPluginHost(),
+            pluginHost: plugin.createLegacyTuiPluginHost(),
             directory: cwd,
             fetch: transport.fetch,
             headers: transport.headers,
@@ -312,4 +316,3 @@ export const TuiThreadCommand = cmd({
     process.exit(0)
   },
 })
-// scratch

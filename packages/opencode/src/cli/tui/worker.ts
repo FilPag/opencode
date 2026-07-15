@@ -1,19 +1,16 @@
-import { Server } from "@/server/server"
-import { InstanceRuntime } from "@/project/instance-runtime"
 import { Rpc } from "@/util/rpc"
-import { upgrade } from "@/cli/upgrade"
-import { Config } from "@/config/config"
 import { GlobalBus } from "@/bus/global"
 import { ServerAuth } from "@/server/auth"
 import { writeHeapSnapshot } from "node:v8"
 import { Heap } from "@/cli/heap"
-import { AppRuntime } from "@/effect/app-runtime"
-import { Effect } from "effect"
-import { disposeAllInstancesAndEmitGlobalDisposed } from "@/server/global-lifecycle"
 import { BootProfile } from "@opencode-ai/core/boot-profile"
+
+type Listener = Awaited<ReturnType<(typeof import("@/server/server"))["listen"]>>
 
 BootProfile.mark("tui.worker.entry")
 Heap.start()
+const serverModule = import("@/server/server")
+void serverModule.catch(() => {})
 
 const onUnhandledRejection = (_error: unknown) => {}
 
@@ -27,7 +24,7 @@ GlobalBus.on("event", (event) => {
   Rpc.emit("global.event", event)
 })
 
-let server: Awaited<ReturnType<typeof Server.listen>> | undefined
+let server: Listener | undefined
 let internalRequest = false
 
 export const rpc = {
@@ -47,6 +44,7 @@ export const rpc = {
       headers,
       body: input.body,
     })
+    const { Server } = await serverModule
     const response = await Server.Default().app.fetch(request)
     if (firstRequest) BootProfile.mark("server.internal.first_response")
     const body = await response.text()
@@ -62,15 +60,28 @@ export const rpc = {
   },
   async server(input: { port: number; hostname: string; mdns?: boolean; cors?: string[] }) {
     if (server) await server.stop(true)
+    const { Server } = await serverModule
     server = await Server.listen(input)
     BootProfile.mark("server.listener.ready")
     return { url: server.url.toString() }
   },
   async checkUpgrade(input: { directory: string }) {
+    await serverModule
+    const [{ InstanceRuntime }, { upgrade }] = await Promise.all([
+      import("@/project/instance-runtime"),
+      import("@/cli/upgrade"),
+    ])
     await InstanceRuntime.load({ directory: input.directory })
     await upgrade().catch(() => {})
   },
   async reload() {
+    await serverModule
+    const [{ AppRuntime }, { Effect }, { Config }, { disposeAllInstancesAndEmitGlobalDisposed }] = await Promise.all([
+      import("@/effect/app-runtime"),
+      import("effect"),
+      import("@/config/config"),
+      import("@/server/global-lifecycle"),
+    ])
     await AppRuntime.runPromise(
       Effect.gen(function* () {
         const cfg = yield* Config.Service
@@ -80,6 +91,8 @@ export const rpc = {
     )
   },
   async shutdown() {
+    await serverModule
+    const { InstanceRuntime } = await import("@/project/instance-runtime")
     await InstanceRuntime.disposeAllInstances()
     if (server) await server.stop(true)
     process.off("unhandledRejection", onUnhandledRejection)
@@ -88,3 +101,4 @@ export const rpc = {
 }
 
 Rpc.listen(rpc)
+BootProfile.mark("tui.worker.rpc.ready")
