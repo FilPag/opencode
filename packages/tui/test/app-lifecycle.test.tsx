@@ -7,6 +7,54 @@ import { Global } from "@opencode-ai/core/global"
 import { createTuiResolvedConfig } from "./fixture/tui-runtime"
 import { createEventSource, createFetch, directory, json } from "./fixture/tui-sdk"
 
+test("first render does not wait for theme detection or plugin settlement", async () => {
+  const setup = await createTestRenderer({ width: 80, height: 24, useThread: false })
+  const core = await import("@opentui/core")
+  mock.module("@opentui/core", () => ({ ...core, createCliRenderer: async () => setup.renderer }))
+  setup.renderer.waitForThemeMode = () => new Promise(() => {})
+  const events = createEventSource()
+  const calls = createFetch()
+  let pluginStarted!: () => void
+  const started = new Promise<void>((resolve) => {
+    pluginStarted = resolve
+  })
+  const pending = new Promise<void>(() => {})
+
+  try {
+    const { run } = await import("../src/app")
+    const task = Effect.runPromise(
+      run({
+        url: "http://test",
+        directory,
+        config: createTuiResolvedConfig({ plugin_enabled: {} }),
+        fetch: calls.fetch,
+        events: events.source,
+        args: {},
+        pluginHost: {
+          start() {
+            pluginStarted()
+            return pending
+          },
+          async dispose() {},
+        },
+      }).pipe(Effect.provide(AppNodeBuilder.build(Global.node))),
+    )
+
+    await started
+    const deadline = Date.now() + 5000
+    while (!setup.captureCharFrame().trim() && Date.now() < deadline) {
+      await setup.renderOnce()
+      await Bun.sleep(10)
+    }
+    expect(setup.captureCharFrame().trim()).not.toBe("")
+    process.emit("SIGHUP")
+    await task
+  } finally {
+    if (!setup.renderer.isDestroyed) setup.renderer.destroy()
+    mock.restore()
+  }
+})
+
 test("SIGHUP clears title and disposes scoped resources once", async () => {
   const setup = await createTestRenderer({ width: 80, height: 24, useThread: false })
   const core = await import("@opentui/core")

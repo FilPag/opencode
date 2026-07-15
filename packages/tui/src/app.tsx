@@ -239,10 +239,10 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
       const pluginRuntime = createPluginRuntime()
 
       yield* Effect.tryPromise(async () => {
-        // Prewarm palette before ThemeProvider mounts so `system` theme avoids a first-paint fallback flash.
+        // Prewarm palette without delaying first paint; ThemeProvider applies the result reactively.
         void renderer.getPalette({ size: 16 }).catch(() => undefined)
-        const mode = (await renderer.waitForThemeMode(1000)) ?? "dark"
-        BootProfile.mark("tui.theme_mode.resolved", { mode })
+        const mode = renderer.themeMode ?? "dark"
+        BootProfile.mark("tui.theme_mode.initial", { mode })
         if (renderer.isDestroyed) return
 
         await render(() => {
@@ -1112,25 +1112,23 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
       <Show when={Flag.OPENCODE_SHOW_TTFD}>
         <TimeToFirstDraw />
       </Show>
-      <Show when={ready()}>
-        <box flexGrow={1} minHeight={0} flexDirection="column">
-          <Switch>
-            <Match when={route.data.type === "home"}>
-              <Home />
-            </Match>
-            <Match when={route.data.type === "session"}>
-              <Show when={route.data.type === "session" ? route.data.sessionID : undefined} keyed>
-                {(_) => <Session />}
-              </Show>
-            </Match>
-          </Switch>
-          {plugin()}
-        </box>
-        <box flexShrink={0}>
-          <pluginRuntime.Slot name="app_bottom" />
-        </box>
-        <pluginRuntime.Slot name="app" />
-      </Show>
+      <box flexGrow={1} minHeight={0} flexDirection="column">
+        <Switch>
+          <Match when={route.data.type === "home"}>
+            <Home />
+          </Match>
+          <Match when={route.data.type === "session"}>
+            <Show when={route.data.type === "session" ? route.data.sessionID : undefined} keyed>
+              {(_) => <Session />}
+            </Show>
+          </Match>
+        </Switch>
+        {plugin()}
+      </box>
+      <box flexShrink={0}>
+        <pluginRuntime.Slot name="app_bottom" />
+      </box>
+      <pluginRuntime.Slot name="app" />
       <Show when={!startup.skipInitialLoading}>
         <StartupLoading ready={ready} />
       </Show>
