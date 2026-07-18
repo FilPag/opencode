@@ -35,6 +35,7 @@ import { ConfigPlugin } from "./plugin"
 import { ConfigVariable } from "./variable"
 import { Npm } from "@opencode-ai/core/npm"
 import { withTransientReadRetry } from "@/util/effect-http-client"
+import { ConfigReference } from "@opencode-ai/core/config/reference"
 
 // Custom merge function that concatenates array fields instead of replacing them
 // Keep remeda's deep conditional merge type out of hot config-loading paths; TS profiling showed it dominates here.
@@ -112,13 +113,19 @@ type Info = ConfigV1.Info & {
   // plugin_origins is derived state, not a persisted config field. It keeps each winning plugin spec together
   // with the file and scope it came from so later runtime code can make location-sensitive decisions.
   plugin_origins?: ConfigPlugin.Origin[]
+  reference_sources?: Record<string, ReferenceSource>
 }
+
+export type ReferenceSource =
+  | { type: "local"; path: string; description?: string; hidden?: boolean }
+  | { type: "git"; repository: string; branch?: string; description?: string; hidden?: boolean }
 
 type State = {
   config: Info
   directories: string[]
   deps: Fiber.Fiber<void>[]
   consoleState: ConsoleState
+  referenceSources: [string, ReferenceSource][]
 }
 
 export interface Interface {
@@ -130,6 +137,7 @@ export interface Interface {
   readonly invalidate: () => Effect.Effect<void>
   readonly directories: () => Effect.Effect<string[]>
   readonly waitForDependencies: () => Effect.Effect<void>
+  readonly referenceSources: () => Effect.Effect<[string, ReferenceSource][]>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/Config") {}
@@ -161,8 +169,58 @@ function patchJsonc(input: string, patch: unknown, path: string[] = []): string 
 }
 
 function writable(info: Info) {
-  const { plugin_origins: _plugin_origins, ...next } = info
+  const { plugin_origins: _plugin_origins, reference_sources: _reference_sources, ...next } = info
   return next
+}
+
+function referenceSources(info: Info, directory: string) {
+  return Object.fromEntries(
+    Object.entries(info.references ?? info.reference ?? {})
+      .map(([name, entry]): readonly [string, ReferenceSource] | undefined => {
+        if (!ConfigReference.validAlias(name)) return
+        const description = typeof entry === "string" ? undefined : entry.description
+        const hidden = typeof entry === "string" ? undefined : entry.hidden
+        const local = typeof entry === "string" ? localReference(entry) : "path" in entry
+        if (local) {
+          const value = typeof entry === "string" ? entry : "path" in entry ? entry.path : entry.repository
+          const resolved = value.startsWith("~/")
+            ? path.join(Global.Path.home, value.slice(2))
+            : path.isAbsolute(value)
+              ? value
+              : path.resolve(directory, value)
+          return [name, { type: "local", path: resolved, description, hidden }]
+        }
+        return [
+          name,
+          {
+            type: "git",
+            repository: typeof entry === "string" ? entry : "repository" in entry ? entry.repository : entry.path,
+            branch: typeof entry === "string" || !("repository" in entry) ? undefined : entry.branch,
+            description,
+            hidden,
+          },
+        ]
+      })
+      .filter((item): item is readonly [string, ReferenceSource] => item !== undefined),
+  )
+}
+
+function localReference(entry: string) {
+  return entry.startsWith(".") || entry.startsWith("/") || entry.startsWith("~")
+}
+
+function withReferenceSources(previous: Info, next: Info, merged: Info) {
+  const current = previous.reference_sources ?? {}
+  if (next.references !== undefined) {
+    return {
+      ...merged,
+      reference_sources: { ...(previous.references === undefined ? {} : current), ...next.reference_sources },
+    }
+  }
+  if (next.reference !== undefined && previous.references === undefined) {
+    return { ...merged, reference_sources: { ...current, ...next.reference_sources } }
+  }
+  return { ...merged, reference_sources: current }
 }
 
 function writableGlobal(info: Info) {
@@ -224,7 +282,11 @@ const layer = Layer.effect(
         ),
       )
       const parsed = ConfigParse.jsonc(expanded, source)
-      const data = ConfigParse.schema(ConfigV1.Info, normalizeLoadedConfig(parsed), source)
+      const loaded = ConfigParse.schema(ConfigV1.Info, normalizeLoadedConfig(parsed), source)
+      const data: Info = {
+        ...loaded,
+        reference_sources: referenceSources(loaded, "path" in options ? path.dirname(options.path) : options.dir),
+      }
       if (!("path" in options)) return data
 
       yield* Effect.promise(() => resolveLoadedPlugins(data, options.path))
@@ -255,9 +317,10 @@ const layer = Layer.effect(
             .pipe(Effect.catch(() => Effect.void))
         }
       }
-      result = mergeConfig(result, yield* loadFile(path.join(Global.Path.config, "config.json"), env))
-      result = mergeConfig(result, yield* loadFile(path.join(Global.Path.config, "opencode.json"), env))
-      result = mergeConfig(result, yield* loadFile(path.join(Global.Path.config, "opencode.jsonc"), env))
+      for (const file of ["config.json", "opencode.json", "opencode.jsonc"]) {
+        const next = yield* loadFile(path.join(Global.Path.config, file), env)
+        result = withReferenceSources(result, next, mergeConfig(result, next))
+      }
 
       const legacy = path.join(Global.Path.config, "config")
       if (existsSync(legacy)) {
@@ -267,8 +330,9 @@ const layer = Layer.effect(
               const { provider, model, ...rest } = mod.default
               if (provider && model) result.model = `${provider}/${model}`
               result["$schema"] = "https://opencode.ai/config.json"
-              result = mergeConfig(result, rest)
-              await fsNode.writeFile(path.join(Global.Path.config, "config.json"), JSON.stringify(result, null, 2))
+              const next = { ...rest, reference_sources: referenceSources(rest, Global.Path.config) }
+              result = withReferenceSources(result, next, mergeConfig(result, next))
+              await fsNode.writeFile(path.join(Global.Path.config, "config.json"), JSON.stringify(writable(result), null, 2))
               await fsNode.unlink(legacy)
             })
             .catch(() => {}),
@@ -349,7 +413,7 @@ const layer = Layer.effect(
         })
 
         const merge = (source: string, next: Info, kind?: ConfigPlugin.Scope) => {
-          result = mergeConfigConcatArrays(result, next)
+          result = withReferenceSources(result, next, mergeConfigConcatArrays(result, next))
           return mergePluginOrigins(source, next.plugin, kind)
         }
 
@@ -404,8 +468,14 @@ const layer = Layer.effect(
         }
 
         if (!Flag.OPENCODE_DISABLE_PROJECT_CONFIG) {
-          for (const file of yield* ConfigPaths.files("opencode", ctx.directory, ctx.worktree).pipe(Effect.orDie)) {
-            yield* merge(file, yield* loadFile(file, authEnv), "local")
+          const files = yield* ConfigPaths.files("opencode", ctx.directory, ctx.worktree).pipe(Effect.orDie)
+          const configs = yield* Effect.forEach(
+            files,
+            (file) => loadFile(file, authEnv).pipe(Effect.map((config) => ({ file, config }))),
+            { concurrency: "unbounded" },
+          )
+          for (const item of configs) {
+            yield* merge(item.file, item.config, "local")
           }
         }
 
@@ -421,48 +491,69 @@ const layer = Layer.effect(
 
         const deps: Fiber.Fiber<void>[] = []
 
-        for (const dir of directories) {
-          if (dir.endsWith(".opencode") || dir === Flag.OPENCODE_CONFIG_DIR) {
-            for (const file of ["opencode.json", "opencode.jsonc"]) {
-              const source = path.join(dir, file)
-              yield* Effect.logDebug(`loading config from ${source}`)
-              yield* merge(source, yield* loadFile(source, authEnv))
-              result.agent ??= {}
-              result.mode ??= {}
-              result.plugin ??= []
-            }
-          }
-
-          yield* ensureGitignore(dir).pipe(Effect.orDie)
-
-          const dep = yield* npmSvc
-            .install(dir, {
-              add: [
-                {
-                  name: "@opencode-ai/plugin",
-                  version: InstallationLocal ? undefined : InstallationVersion,
-                },
-              ],
-            })
-            .pipe(
-              Effect.exit,
-              Effect.tap((exit) =>
-                Exit.isFailure(exit)
-                  ? Effect.logWarning("background dependency install failed", { dir, error: String(exit.cause) })
-                  : Effect.void,
-              ),
-              Effect.asVoid,
-              Effect.forkDetach,
+        const artifacts = yield* Effect.forEach(
+          directories,
+          Effect.fnUntraced(function* (dir) {
+            const files = dir.endsWith(".opencode") || dir === Flag.OPENCODE_CONFIG_DIR
+              ? ["opencode.json", "opencode.jsonc"].map((file) => path.join(dir, file))
+              : []
+            const configs = yield* Effect.forEach(
+              files,
+              (source) =>
+                Effect.logDebug(`loading config from ${source}`).pipe(
+                  Effect.andThen(loadFile(source, authEnv)),
+                  Effect.map((config) => ({ source, config })),
+                ),
+              { concurrency: "unbounded" },
             )
-          deps.push(dep)
+            yield* ensureGitignore(dir).pipe(Effect.orDie)
+            const dep = yield* npmSvc
+              .install(dir, {
+                add: [
+                  {
+                    name: "@opencode-ai/plugin",
+                    version: InstallationLocal ? undefined : InstallationVersion,
+                  },
+                ],
+              })
+              .pipe(
+                Effect.exit,
+                Effect.tap((exit) =>
+                  Exit.isFailure(exit)
+                    ? Effect.logWarning("background dependency install failed", { dir, error: String(exit.cause) })
+                    : Effect.void,
+                ),
+                Effect.asVoid,
+                Effect.forkDetach,
+              )
+            const [command, agent, mode, plugins] = yield* Effect.all(
+              [
+                Effect.promise(() => ConfigCommand.load(dir)),
+                Effect.promise(() => ConfigAgent.load(dir)),
+                Effect.promise(() => ConfigAgent.loadMode(dir)),
+                Effect.promise(() => ConfigPlugin.load(dir)),
+              ],
+              { concurrency: "unbounded" },
+            )
+            return { dir, configs, dep, command, agent, mode, plugins }
+          }),
+          { concurrency: "unbounded" },
+        )
 
-          result.command = mergeDeep(result.command ?? {}, yield* Effect.promise(() => ConfigCommand.load(dir)))
-          result.agent = mergeDeep(result.agent ?? {}, yield* Effect.promise(() => ConfigAgent.load(dir)))
-          result.agent = mergeDeep(result.agent ?? {}, yield* Effect.promise(() => ConfigAgent.loadMode(dir)))
+        for (const item of artifacts) {
+          for (const config of item.configs) {
+            yield* merge(config.source, config.config)
+            result.agent ??= {}
+            result.mode ??= {}
+            result.plugin ??= []
+          }
+          deps.push(item.dep)
+          result.command = mergeDeep(result.command ?? {}, item.command)
+          result.agent = mergeDeep(result.agent ?? {}, item.agent)
+          result.agent = mergeDeep(result.agent ?? {}, item.mode)
           // Auto-discovered plugins under `.opencode/plugin(s)` are already local files, so ConfigPlugin.load
           // returns normalized Specs and we only need to attach origin metadata here.
-          const list = yield* Effect.promise(() => ConfigPlugin.load(dir))
-          yield* mergePluginOrigins(dir, list)
+          yield* mergePluginOrigins(item.dir, item.plugins)
         }
 
         if (process.env.OPENCODE_CONFIG_CONTENT) {
@@ -524,13 +615,11 @@ const layer = Layer.effect(
         // macOS managed preferences (.mobileconfig deployed via MDM) override everything
         const managed = yield* Effect.promise(() => ConfigManaged.readManagedPreferences())
         if (managed) {
-          result = mergeConfigConcatArrays(
-            result,
-            yield* loadConfig(managed.text, {
-              dir: path.dirname(managed.source),
-              source: managed.source,
-            }),
-          )
+          const next = yield* loadConfig(managed.text, {
+            dir: path.dirname(managed.source),
+            source: managed.source,
+          })
+          result = withReferenceSources(result, next, mergeConfigConcatArrays(result, next))
         }
 
         for (const [name, mode] of Object.entries(result.mode ?? {})) {
@@ -587,6 +676,7 @@ const layer = Layer.effect(
           config: result,
           directories,
           deps,
+          referenceSources: Object.entries(result.reference_sources ?? {}),
           consoleState: {
             consoleManagedProviders: Array.from(consoleManagedProviders),
             activeOrgName,
@@ -619,6 +709,10 @@ const layer = Layer.effect(
       yield* InstanceState.useEffect(state, (s) =>
         Effect.forEach(s.deps, Fiber.join, { concurrency: "unbounded" }).pipe(Effect.asVoid),
       )
+    })
+
+    const getReferenceSources = Effect.fn("Config.referenceSources")(function* () {
+      return yield* InstanceState.use(state, (s) => s.referenceSources)
     })
 
     const update = Effect.fn("Config.update")(function* (config: Info) {
@@ -668,6 +762,7 @@ const layer = Layer.effect(
       invalidate,
       directories,
       waitForDependencies,
+      referenceSources: getReferenceSources,
     })
   }),
 )

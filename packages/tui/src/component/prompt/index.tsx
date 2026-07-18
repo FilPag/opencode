@@ -624,8 +624,9 @@ export function Prompt(props: PromptProps) {
   })
 
   onCleanup(() => {
-    if (store.prompt.input) {
-      stashed = { prompt: unwrap(store.prompt), cursor: input.cursorOffset }
+    const target = inputTarget()
+    if (store.prompt.input && target && !target.isDestroyed) {
+      stashed = { prompt: unwrap(store.prompt), cursor: target.cursorOffset }
     }
     setInputTarget(undefined)
     props.ref?.(undefined)
@@ -797,32 +798,36 @@ export function Prompt(props: PromptProps) {
   }))
 
   useBindings(() => {
+    const target = inputTarget()
     return {
       target: inputTarget,
-      enabled: inputTarget() !== undefined && !disabled(),
+      enabled: target !== undefined && !target.isDestroyed && !disabled(),
       bindings: tuiConfig.keybinds.get("prompt.paste"),
     }
   })
 
   useBindings(() => {
+    const target = inputTarget()
     return {
       target: inputTarget,
-      enabled: inputTarget() !== undefined && !disabled() && store.prompt.input !== "",
+      enabled: target !== undefined && !target.isDestroyed && !disabled() && store.prompt.input !== "",
       bindings: tuiConfig.keybinds.get("prompt.clear"),
     }
   })
 
   useBindings(() => {
+    const target = inputTarget()
     return {
       target: inputTarget,
       enabled: (() => {
         cursorVersion()
         return (
-          inputTarget() !== undefined &&
+          target !== undefined &&
+          !target.isDestroyed &&
           !disabled() &&
           store.mode === "normal" &&
           !auto()?.visible &&
-          input?.visualCursor.offset === 0
+          target.visualCursor.offset === 0
         )
       })(),
       bindings: [
@@ -840,30 +845,33 @@ export function Prompt(props: PromptProps) {
   })
 
   useBindings(() => {
+    const target = inputTarget()
     return {
       target: inputTarget,
-      enabled: inputTarget() !== undefined && store.mode === "shell",
+      enabled: target !== undefined && !target.isDestroyed && store.mode === "shell",
       bindings: [{ key: "escape", desc: "Exit shell mode", group: "Prompt", cmd: () => setStore("mode", "normal") }],
     }
   })
 
   useBindings(() => {
+    const target = inputTarget()
     return {
       target: inputTarget,
       enabled: (() => {
         cursorVersion()
-        return inputTarget() !== undefined && store.mode === "shell" && input?.visualCursor.offset === 0
+        return target !== undefined && !target.isDestroyed && store.mode === "shell" && target.visualCursor.offset === 0
       })(),
       bindings: [{ key: "backspace", desc: "Exit shell mode", group: "Prompt", cmd: () => setStore("mode", "normal") }],
     }
   })
 
   useBindings(() => {
+    const target = inputTarget()
     return {
       target: inputTarget,
       enabled: (() => {
         cursorVersion()
-        return inputTarget() !== undefined && !disabled() && !auto()?.visible && input !== undefined
+        return target !== undefined && !target.isDestroyed && !disabled() && !auto()?.visible
       })(),
       commands: [
         {
@@ -871,6 +879,7 @@ export function Prompt(props: PromptProps) {
           title: "Previous prompt history",
           category: "Prompt",
           run() {
+            if (input.isDestroyed) return false
             if (input.cursorOffset !== 0) {
               if (input.scrollY + input.visualCursor.visualRow === 0) input.cursorOffset = 0
               return false
@@ -891,11 +900,12 @@ export function Prompt(props: PromptProps) {
   })
 
   useBindings(() => {
+    const target = inputTarget()
     return {
       target: inputTarget,
       enabled: (() => {
         cursorVersion()
-        return inputTarget() !== undefined && !disabled() && !auto()?.visible && input !== undefined
+        return target !== undefined && !target.isDestroyed && !disabled() && !auto()?.visible
       })(),
       commands: [
         {
@@ -903,6 +913,7 @@ export function Prompt(props: PromptProps) {
           title: "Next prompt history",
           category: "Prompt",
           run() {
+            if (input.isDestroyed) return false
             if (input.cursorOffset !== input.plainText.length) {
               if (
                 input.scrollY + input.visualCursor.visualRow ===
@@ -1001,7 +1012,8 @@ export function Prompt(props: PromptProps) {
     const variant = local.model.variant.current()
     let sessionID = props.sessionID
     let finishMoveProgress = false
-    if (sessionID == null) {
+    const created = sessionID == null
+    if (created) {
       const selectedWorkspace = workspace.selection()
       const workspaceID = selectedWorkspace?.type === "existing" ? selectedWorkspace.workspaceID : undefined
 
@@ -1033,7 +1045,9 @@ export function Prompt(props: PromptProps) {
       }
 
       sessionID = res.data.id
+      sync.session.add(res.data)
     }
+    if (sessionID === undefined) return false
 
     const inputText = expandTrackedPastedText(
       store.prompt.input,
@@ -1143,18 +1157,15 @@ export function Prompt(props: PromptProps) {
     setStore("extmarkToPartIndex", new Map())
     props.onSubmit?.()
 
-    // temporary hack to make sure the message is sent
-    if (!props.sessionID) {
-      if (editorParts.length > 0) editor.preserveSelectionFromNewSession()
-      setTimeout(() => {
-        route.navigate({
-          type: "session",
-          sessionID,
-        })
-      }, 50)
-    }
     input.clear()
     if (finishMoveProgress) move.finishSubmit()
+    if (created) {
+      if (editorParts.length > 0) editor.preserveSelectionFromNewSession()
+      route.navigate({
+        type: "session",
+        sessionID,
+      })
+    }
     return true
   }
 

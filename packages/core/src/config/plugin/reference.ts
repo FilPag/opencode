@@ -24,7 +24,7 @@ export const Plugin = define({
         )) {
           const directory = doc.path ? path.dirname(doc.path) : location.directory
           for (const [name, entry] of Object.entries(doc.info.references ?? {})) {
-            if (!validAlias(name)) continue
+            if (!ConfigReference.validAlias(name)) continue
             const description = typeof entry === "string" ? undefined : entry.description
             const hidden = typeof entry === "string" ? undefined : entry.hidden
             entries.set(
@@ -53,10 +53,6 @@ export const Plugin = define({
     )
   }),
 })
-
-function validAlias(name: string) {
-  return name.length > 0 && !/[\/\s`,]/.test(name)
-}
 
 function local(entry: ConfigReference.Entry): entry is string | ConfigReference.Local {
   return typeof entry === "string"

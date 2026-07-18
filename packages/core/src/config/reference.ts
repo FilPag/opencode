@@ -20,3 +20,7 @@ export type Entry = typeof Entry.Type
 
 export const Info = Schema.Record(Schema.String, Entry)
 export type Info = typeof Info.Type
+
+export function validAlias(name: string) {
+  return name.length > 0 && !/[\/\s`,]/.test(name)
+}

@@ -142,9 +142,10 @@ export const {
     const event = useEvent()
     const project = useProject()
     const sdk = useSDK()
-    const promptPrerequisites = Promise.withResolvers<void>()
-    const commands = Promise.withResolvers<void>()
+    let promptPrerequisites = Promise.withResolvers<void>()
+    let commands = Promise.withResolvers<void>()
     let commandsReady = false
+    let generation = 0
 
     const fullSyncedSessions = new Set<string>()
     const syncingSessions = new Map<string, Promise<void>>()
@@ -448,8 +449,24 @@ export const {
     const args = useArgs()
 
     async function bootstrap(input: { fatal?: boolean } = {}) {
+      promptPrerequisites.resolve()
+      commands.resolve()
+      promptPrerequisites = Promise.withResolvers<void>()
+      commands = Promise.withResolvers<void>()
+      commandsReady = false
+      batch(() => {
+        setStore("provider", [])
+        setStore("provider_default", {})
+        setStore("provider_next", { all: [], default: {}, connected: [] })
+        setStore("provider_auth", {})
+        setStore("agent", [])
+        setStore("config", {})
+        setStore("command", [])
+      })
+      const current = ++generation
       const fatal = input.fatal ?? true
       const workspace = project.workspace.current()
+      const active = () => generation === current && project.workspace.current() === workspace
       const projectPromise = project.sync()
       const sessionListPromise = projectPromise.then(() => listSessions())
 
@@ -468,14 +485,18 @@ export const {
       const configPromise = sdk.client.config.get({ workspace }, { throwOnError: true })
       const commandPromise = sdk.client.command
         .list({ workspace })
-        .then((x) => setStore("command", reconcile(x.data ?? [])))
+        .then((x) => {
+          if (active()) setStore("command", reconcile(x.data ?? []))
+        })
         .catch(() => {})
         .finally(() => {
+          if (!active()) return
           commandsReady = true
           commands.resolve()
         })
       void Promise.all([providersPromise, agentsPromise, configPromise])
         .then(([providers, agents, config]) => {
+          if (!active()) return
           batch(() => {
             setStore("provider", reconcile(providers.data!.providers))
             setStore("provider_default", reconcile(providers.data!.default))
@@ -485,7 +506,9 @@ export const {
           BootProfile.mark("tui.sync.prompt_ready")
         })
         .catch(() => {})
-        .finally(promptPrerequisites.resolve)
+        .finally(() => {
+          if (active()) promptPrerequisites.resolve()
+        })
       await Promise.all([
         providersPromise,
         providerListPromise,
@@ -513,6 +536,7 @@ export const {
             configResponse,
             ...(sessionListResponse ? [sessionListResponse] : []),
           ]).then((responses) => {
+            if (!active()) return
             const providers = responses[0]
             const providerList = responses[1]
             const capabilities = responses[2]
@@ -534,32 +558,55 @@ export const {
           })
         })
         .then(() => {
+          if (!active()) return
           const initial = store.status === "loading"
           if (store.status !== "complete") setStore("status", "partial")
           if (initial) BootProfile.mark("tui.sync.partial")
           // non-blocking
           void Promise.all([
-            ...(args.continue ? [] : [sessionListPromise.then((sessions) => setStore("session", reconcile(sessions)))]),
-            consoleStatePromise.then((consoleState) => setStore("console_state", reconcile(consoleState))),
+            ...(args.continue
+              ? []
+              : [
+                  sessionListPromise.then((sessions) => {
+                    if (active()) setStore("session", reconcile(sessions))
+                  }),
+                ]),
+            consoleStatePromise.then((consoleState) => {
+              if (active()) setStore("console_state", reconcile(consoleState))
+            }),
             commandPromise,
-            sdk.client.lsp.status({ workspace }).then((x) => setStore("lsp", reconcile(x.data ?? []))),
-            sdk.client.mcp.status({ workspace }).then((x) => setStore("mcp", reconcile(x.data ?? {}))),
+            sdk.client.lsp.status({ workspace }).then((x) => {
+              if (active()) setStore("lsp", reconcile(x.data ?? []))
+            }),
+            sdk.client.mcp.status({ workspace }).then((x) => {
+              if (active()) setStore("mcp", reconcile(x.data ?? {}))
+            }),
             sdk.client.experimental.resource
               .list({ workspace })
-              .then((x) => setStore("mcp_resource", reconcile(x.data ?? {}))),
-            sdk.client.formatter.status({ workspace }).then((x) => setStore("formatter", reconcile(x.data ?? []))),
-            sdk.client.session.status({ workspace }).then((x) => {
-              setStore("session_status", reconcile(x.data ?? {}))
+              .then((x) => {
+                if (active()) setStore("mcp_resource", reconcile(x.data ?? {}))
+              }),
+            sdk.client.formatter.status({ workspace }).then((x) => {
+              if (active()) setStore("formatter", reconcile(x.data ?? []))
             }),
-            sdk.client.provider.auth({ workspace }).then((x) => setStore("provider_auth", reconcile(x.data ?? {}))),
-            sdk.client.vcs.get({ workspace }).then((x) => setStore("vcs", reconcile(x.data))),
+            sdk.client.session.status({ workspace }).then((x) => {
+              if (active()) setStore("session_status", reconcile(x.data ?? {}))
+            }),
+            sdk.client.provider.auth({ workspace }).then((x) => {
+              if (active()) setStore("provider_auth", reconcile(x.data ?? {}))
+            }),
+            sdk.client.vcs.get({ workspace }).then((x) => {
+              if (active()) setStore("vcs", reconcile(x.data))
+            }),
             project.workspace.sync(),
           ]).then(() => {
+            if (!active()) return
             setStore("status", "complete")
             if (initial) BootProfile.mark("tui.sync.complete")
           })
         })
         .catch(async (e) => {
+          if (!active()) return
           console.error("tui bootstrap failed", {
             error: e instanceof Error ? e.message : String(e),
             name: e instanceof Error ? e.name : undefined,
@@ -600,6 +647,16 @@ export const {
         return project.instance.path()
       },
       session: {
+        add(session: Session) {
+          setStore(
+            "session",
+            produce((draft) => {
+              const match = search(draft, session.id, (item) => item.id)
+              if (match.found) draft[match.index] = session
+              if (!match.found) draft.splice(match.index, 0, session)
+            }),
+          )
+        },
         get(sessionID: string) {
           const match = search(store.session, sessionID, (s) => s.id)
           if (match.found) return store.session[match.index]

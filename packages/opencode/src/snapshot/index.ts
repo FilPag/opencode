@@ -226,7 +226,10 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
 
           // Seed the index from the source repo so already-hashed entries are reused.
           // Best-effort: a missing/incompatible index just falls back to a full add.
-          const sourceIndex = path.join(source, "index")
+          const index = yield* git(["rev-parse", "--path-format=absolute", "--git-path", "index"], {
+            cwd: state.worktree,
+          })
+          const sourceIndex = index.text.trim()
           if (yield* exists(sourceIndex)) {
             yield* fs.copyFile(sourceIndex, path.join(state.gitdir, "index")).pipe(Effect.catch(() => Effect.void))
           }
@@ -234,31 +237,53 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
 
         const add = Effect.fnUntraced(function* () {
           yield* sync()
+          const tree = yield* git(args(["write-tree"]), { cwd: state.directory })
+          const sourceEnv = {
+            GIT_ALTERNATE_OBJECT_DIRECTORIES: path.join(state.gitdir, "objects"),
+            GIT_OPTIONAL_LOCKS: "0",
+          }
           const [diff, other] = yield* Effect.all(
             [
-              git([...quote, ...args(["diff-files", "--name-only", "-z", "--", "."])], {
+              git([...quote, "diff-index", "--name-only", "-z", "--no-renames", tree.text.trim(), "--", "."], {
                 cwd: state.directory,
+                env: sourceEnv,
               }),
-              git([...quote, ...args(["ls-files", "--full-name", "--others", "--exclude-standard", "-z", "--", "."])], {
+              git([...quote, "ls-files", "--full-name", "--others", "--exclude-standard", "-z", "--", "."], {
                 cwd: state.directory,
+                env: sourceEnv,
               }),
             ],
             { concurrency: 2 },
           )
-          if (diff.code !== 0 || other.code !== 0) {
+          const listed =
+            diff.code === 0 && other.code === 0
+              ? [diff, other]
+              : yield* Effect.all(
+                  [
+                    git([...quote, ...args(["diff-files", "--name-only", "-z", "--", "."])], {
+                      cwd: state.directory,
+                    }),
+                    git(
+                      [...quote, ...args(["ls-files", "--full-name", "--others", "--exclude-standard", "-z", "--", "."])],
+                      { cwd: state.directory },
+                    ),
+                  ],
+                  { concurrency: 2 },
+                )
+          if (listed[0].code !== 0 || listed[1].code !== 0) {
             yield* Effect.logWarning("failed to list snapshot files", {
-              diffCode: diff.code,
-              diffStderr: diff.stderr,
-              otherCode: other.code,
-              otherStderr: other.stderr,
+              diffCode: listed[0].code,
+              diffStderr: listed[0].stderr,
+              otherCode: listed[1].code,
+              otherStderr: listed[1].stderr,
             })
-            return
+            return tree.text.trim()
           }
 
-          const tracked = diff.text.split("\0").filter(Boolean)
-          const untracked = other.text.split("\0").filter(Boolean)
+          const tracked = listed[0].text.split("\0").filter(Boolean)
+          const untracked = listed[1].text.split("\0").filter(Boolean)
           const all = Array.from(new Set([...tracked, ...untracked]))
-          if (!all.length) return
+          if (!all.length) return tree.text.trim()
 
           // Resolve source-repo ignore rules against the exact candidate set.
           // --no-index keeps this pattern-based even when a path is already tracked.
@@ -276,7 +301,7 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
 
           const large = new Set(
             (yield* Effect.all(
-              allow.map((item) =>
+              untracked.filter((item) => !ignored.has(item)).map((item) =>
                 fs
                   .stat(path.join(state.worktree, item))
                   .pipe(Effect.catch(() => Effect.void))
@@ -295,6 +320,7 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
           yield* sync(Array.from(block))
           // Stage only the allowed candidate paths so snapshot updates stay scoped.
           yield* stage(allow.filter((item) => !block.has(item)))
+          return undefined
         })
 
         const cleanup = Effect.fnUntraced(function* () {
@@ -337,9 +363,8 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
                 yield* seed()
                 yield* Effect.logInfo("initialized")
               }
-              yield* add()
-              const result = yield* git(args(["write-tree"]), { cwd: state.directory })
-              const hash = result.text.trim()
+              const existing = yield* add()
+              const hash = existing ?? (yield* git(args(["write-tree"]), { cwd: state.directory })).text.trim()
               yield* Effect.logInfo("tracking", { hash, cwd: state.directory, git: state.gitdir })
               return hash
             }),

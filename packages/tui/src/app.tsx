@@ -76,8 +76,11 @@ import { cliErrorMessage, errorFormat } from "./util/error"
 
 registerOpencodeSpinner()
 
+let sessionRoute: Promise<typeof import("./routes/session")> | undefined
+const loadSessionRoute = () => (sessionRoute ??= import("./routes/session"))
+
 const Session = lazy(async () => {
-  const module = await import("./routes/session")
+  const module = await loadSessionRoute()
   return { default: module.Session }
 })
 
@@ -415,6 +418,7 @@ function App(props: {
   const startPlugins = (frame: { frameId: number }) => {
     if (disposed || renderer.isDestroyed) return
     BootProfile.mark("tui.first_frame", { frame_id: frame.frameId })
+    void loadSessionRoute().catch(() => {})
     BootProfile.mark("tui.plugins.started")
     props.pluginHost
       .start({

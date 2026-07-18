@@ -17,12 +17,9 @@ import type { Provider } from "@/provider/provider"
 import type { Agent } from "@/agent/agent"
 import { Permission } from "@/permission"
 import { Skill } from "@/skill"
-import { AbsolutePath } from "@opencode-ai/core/schema"
-import { Location } from "@opencode-ai/core/location"
-import { LocationServiceMap, locationServiceMapLayer } from "@opencode-ai/core/location-services"
-import { Reference } from "@opencode-ai/core/reference"
 import { MCP } from "@/mcp"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
+import { ConfigReference } from "@/config/reference"
 
 export function provider(model: Provider.Model) {
   if (model.api.id.includes("muse-spark")) return [PROMPT_META]
@@ -54,14 +51,12 @@ const layer = Layer.effect(
   Effect.gen(function* () {
     const skill = yield* Skill.Service
     const mcp = yield* MCP.Service
-    const locations = yield* LocationServiceMap.Service
+    const references = yield* ConfigReference.Service
 
     return Service.of({
       environment: Effect.fn("SystemPrompt.environment")(function* (model: Provider.Model) {
         const ctx = yield* InstanceState.context
-        const references = yield* Effect.gen(function* () {
-          return (yield* (yield* Reference.Service).list()).filter((reference) => reference.description !== undefined)
-        }).pipe(Effect.provide(locations.get(Location.Ref.make({ directory: AbsolutePath.make(ctx.directory) }))))
+        const availableReferences = (yield* references.list()).filter((reference) => reference.description !== undefined)
         return [
           [
             `You are powered by the model named ${model.api.id}. The exact model ID is ${model.providerID}/${model.api.id}`,
@@ -74,12 +69,12 @@ const layer = Layer.effect(
             `  Today's date: ${new Date().toDateString()}`,
             `</env>`,
           ].join("\n"),
-          references.length === 0
+          availableReferences.length === 0
             ? undefined
             : [
                 "Project references provide additional directories that can be accessed when relevant.",
                 "<available_references>",
-                ...references
+                ...availableReferences
                   .toSorted((a, b) => a.name.localeCompare(b.name))
                   .flatMap((reference) => [
                     "  <reference>",
@@ -130,16 +125,10 @@ const layer = Layer.effect(
   }),
 )
 
-const locationServiceMapNode = LayerNode.make({
-  service: LocationServiceMap.Service,
-  layer: locationServiceMapLayer,
-  deps: [],
-})
-
 export const node = LayerNode.make({
   service: Service,
   layer: layer,
-  deps: [Skill.node, MCP.node, locationServiceMapNode],
+  deps: [Skill.node, MCP.node, ConfigReference.node],
 })
 
 export * as SystemPrompt from "./system"

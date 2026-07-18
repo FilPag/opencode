@@ -1220,13 +1220,24 @@ const layer = Layer.effect(
             yield* sessions.updateMessage(msg)
           })
 
-          const handle = yield* processor
-            .create({
-              assistantMessage: msg,
-              sessionID,
-              model,
-            })
-            .pipe(Effect.onInterrupt(() => finalizeInterruptedAssistant))
+          const [handle, [skills, env, instructions, mcpInstructions]] = yield* Effect.all(
+            [
+              processor
+                .create({
+                  assistantMessage: msg,
+                  sessionID,
+                  model,
+                })
+                .pipe(Effect.onInterrupt(() => finalizeInterruptedAssistant)),
+              Effect.all([
+                sys.skills(agent),
+                sys.environment(model),
+                instruction.system().pipe(Effect.orDie),
+                sys.mcp(agent, session.permission),
+              ]),
+            ],
+            { concurrency: "unbounded" },
+          )
 
           const outcome: "break" | "continue" = yield* Effect.gen(function* () {
             const lastUserMsg = msgs.findLast((m) => m.info.role === "user")
@@ -1264,13 +1275,7 @@ const layer = Layer.effect(
 
             yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
 
-            const [skills, env, instructions, mcpInstructions, modelMsgs] = yield* Effect.all([
-              sys.skills(agent),
-              sys.environment(model),
-              instruction.system().pipe(Effect.orDie),
-              sys.mcp(agent, session.permission),
-              MessageV2.toModelMessagesEffect(msgs, model),
-            ])
+            const modelMsgs = yield* MessageV2.toModelMessagesEffect(msgs, model)
             const system = [
               ...env,
               ...instructions,

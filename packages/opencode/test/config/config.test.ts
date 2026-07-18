@@ -744,6 +744,29 @@ it.instance("accepts the deprecated reference field", () =>
   }),
 )
 
+it.instance("keeps reference provenance aligned with canonical references", () =>
+  Effect.gen(function* () {
+    const test = yield* TestInstance
+    yield* writeConfigEffect(test.directory, {
+      references: { docs: { path: "./canonical" } },
+    })
+    yield* FSUtil.use.writeWithDirs(
+      path.join(test.directory, ".opencode", "opencode.json"),
+      JSON.stringify({ reference: { docs: { path: "./deprecated" } } }),
+    )
+
+    const config = yield* Config.use.get()
+    const references = yield* Config.use.referenceSources()
+    expect(config.references?.docs).toEqual({ path: "./canonical" })
+    expect(references).toEqual([
+      [
+        "docs",
+        { type: "local", path: path.join(test.directory, "canonical"), description: undefined, hidden: undefined },
+      ],
+    ])
+  }),
+)
+
 it.instance("loads config from .opencode directory", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance
