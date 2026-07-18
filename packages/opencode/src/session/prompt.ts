@@ -101,6 +101,7 @@ function isOrphanedInterruptedTool(part: SessionV1.ToolPart) {
 
 export interface Interface {
   readonly cancel: (sessionID: SessionID) => Effect.Effect<void>
+  readonly interrupt: (sessionID: SessionID) => Effect.Effect<void>
   readonly prompt: (input: PromptInput) => Effect.Effect<SessionV1.WithParts, Image.Error>
   readonly loop: (input: LoopInput) => Effect.Effect<SessionV1.WithParts>
   readonly shell: (input: ShellInput) => Effect.Effect<SessionV1.WithParts, Session.BusyError>
@@ -152,6 +153,15 @@ const layer = Layer.effect(
     const cancel = Effect.fn("SessionPrompt.cancel")(function* (sessionID: SessionID) {
       yield* Effect.logInfo("cancel", { "session.id": sessionID })
       yield* state.cancel(sessionID)
+    })
+
+    const interrupt = Effect.fn("SessionPrompt.interrupt")(function* (sessionID: SessionID) {
+      const messages = yield* sessions.messages({ sessionID }).pipe(Effect.orDie)
+      const user = messages.findLast((message) => message.info.role === "user")
+      const assistant = messages.findLast((message) => message.info.role === "assistant")
+      yield* cancel(sessionID)
+      if (!user || !assistant || user.info.id < assistant.info.id) return
+      yield* loop({ sessionID })
     })
 
     const resolvePromptParts = Effect.fn("SessionPrompt.resolvePromptParts")(function* (template: string) {
@@ -1482,6 +1492,7 @@ const layer = Layer.effect(
 
     return Service.of({
       cancel,
+      interrupt,
       prompt,
       loop,
       shell,

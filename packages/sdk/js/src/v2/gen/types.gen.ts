@@ -9982,6 +9982,36 @@ export type SessionAbortResponses = {
 
 export type SessionAbortResponse = SessionAbortResponses[keyof SessionAbortResponses]
 
+export type SessionInterruptNextData = {
+  body?: never
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/session/{sessionID}/interrupt-next"
+}
+
+export type SessionInterruptNextErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+}
+
+export type SessionInterruptNextError = SessionInterruptNextErrors[keyof SessionInterruptNextErrors]
+
+export type SessionInterruptNextResponses = {
+  /**
+   * Interrupted session
+   */
+  200: boolean
+}
+
+export type SessionInterruptNextResponse = SessionInterruptNextResponses[keyof SessionInterruptNextResponses]
+
 export type SessionInitData = {
   body?: {
     modelID: string

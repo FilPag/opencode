@@ -195,6 +195,8 @@ import type {
   SessionGetResponses,
   SessionInitErrors,
   SessionInitResponses,
+  SessionInterruptNextErrors,
+  SessionInterruptNextResponses,
   SessionListErrors,
   SessionListResponses,
   SessionMessageErrors,
@@ -3932,6 +3934,42 @@ export class Session2 extends HeyApiClient {
     )
     return (options?.client ?? this.client).post<SessionAbortResponses, SessionAbortErrors, ThrowOnError>({
       url: "/session/{sessionID}/abort",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Interrupt and continue session
+   *
+   * Interrupt active AI processing and continue with the next queued prompt.
+   */
+  public interruptNext<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      SessionInterruptNextResponses,
+      SessionInterruptNextErrors,
+      ThrowOnError
+    >({
+      url: "/session/{sessionID}/interrupt-next",
       ...options,
       ...params,
     })

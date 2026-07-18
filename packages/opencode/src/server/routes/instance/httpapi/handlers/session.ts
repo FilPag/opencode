@@ -234,6 +234,11 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       return true
     })
 
+    const interruptNext = Effect.fn("SessionHttpApi.interruptNext")(function* (ctx: { params: { sessionID: SessionID } }) {
+      yield* promptSvc.interrupt(ctx.params.sessionID)
+      return true
+    })
+
     const init = Effect.fn("SessionHttpApi.init")(function* (ctx: {
       params: { sessionID: SessionID }
       payload: typeof InitPayload.Type
@@ -424,6 +429,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       .handle("update", update)
       .handleRaw("fork", forkRaw)
       .handle("abort", abort)
+      .handle("interruptNext", interruptNext)
       .handle("init", init)
       .handle("share", share)
       .handle("unshare", unshare)

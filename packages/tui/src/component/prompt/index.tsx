@@ -406,18 +406,16 @@ export function Prompt(props: PromptProps) {
           }
           if (!props.sessionID) return
 
-          setStore("interrupt", store.interrupt + 1)
-
-          setTimeout(() => {
+          if (store.interrupt > 0) {
+            void sdk.client.session.abort({ sessionID: props.sessionID })
             setStore("interrupt", 0)
-          }, 5000)
-
-          if (store.interrupt >= 2) {
-            void sdk.client.session.abort({
-              sessionID: props.sessionID,
-            })
-            setStore("interrupt", 0)
+            dialog.clear()
+            return
           }
+
+          setStore("interrupt", 1)
+          setTimeout(() => setStore("interrupt", 0), 2000)
+          void sdk.client.session.interruptNext({ sessionID: props.sessionID })
           dialog.clear()
         },
       },
@@ -1599,7 +1597,7 @@ export function Prompt(props: PromptProps) {
                 <text fg={store.interrupt > 0 ? theme.primary : theme.text}>
                   esc{" "}
                   <span style={{ fg: store.interrupt > 0 ? theme.primary : theme.textMuted }}>
-                    {store.interrupt > 0 ? "again to interrupt" : "interrupt"}
+                    {store.interrupt > 0 ? "again to stop" : "cancel"}
                   </span>
                 </text>
               </box>
